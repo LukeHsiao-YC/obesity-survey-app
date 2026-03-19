@@ -1,39 +1,23 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
-    <!-- 回到健康大廳按鈕 -->
-<a href="https://lukehsiao-yc.github.io/for_healthy_children/" 
-   style="position: fixed; 
-          top: 20px; 
-          left: 20px; 
-          background-color: #f43f5e; 
-          color: white; 
-          padding: 10px 16px; 
-          border-radius: 50px; 
-          text-decoration: none; 
-          font-weight: bold; 
-          box-shadow: 0 4px 6px rgba(0,0,0,0.1); 
-          z-index: 9999; 
-          display: flex; 
-          align-items: center; 
-          font-family: 'Noto Sans TC', sans-serif;
-          transition: transform 0.2s;">
-   <span style="margin-right: 6px; font-size: 18px;">🏠</span> 回到大廳
-</a>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>兒童健康成長站</title>
+    <title>身材檢測站</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Babel for JSX -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <!-- Import Map for React modules -->
+    <!-- Import Map for React and Firebase modules -->
     <script type="importmap">
     {
         "imports": {
             "react": "https://esm.sh/react@18.2.0",
             "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
-            "lucide-react": "https://esm.sh/lucide-react@0.344.0"
+            "lucide-react": "https://esm.sh/lucide-react@0.344.0",
+            "firebase/app": "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js",
+            "firebase/auth": "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js",
+            "firebase/firestore": "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js"
         }
     }
     </script>
@@ -72,12 +56,50 @@
             Calculator, Activity, HeartPulse, Utensils, Droplets, Moon, 
             Footprints, AlertTriangle, ArrowRight, CheckCircle2, Stethoscope, 
             Info, UserCheck, Plus, Trophy, Coffee, Timer, Gamepad2, 
-            Pizza, Brain, Flame, Zap, FileText, ClipboardCheck, Lock, Scale 
+            Pizza, Brain, Flame, Zap, FileText, ClipboardCheck, Lock, Scale,
+            Upload, Database, XCircle
         } from 'lucide-react';
+        
+        // Firebase Imports
+        import { initializeApp } from 'firebase/app';
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+        import { getFirestore, collection, addDoc, getDocs, query, orderBy, serverTimestamp } from 'firebase/firestore';
+
+        // --- Firebase Initialization ---
+        let db = null;
+        let auth = null;
+        let appId = 'default-app-id';
+
+        try {
+            // 在此處填入您的 Firebase Config，或依賴環境變數
+            const firebaseConfig = typeof __firebase_config !== 'undefined' 
+                ? JSON.parse(__firebase_config) 
+                : null;
+            
+            if (firebaseConfig) {
+                const app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                if (typeof __app_id !== 'undefined') appId = __app_id;
+
+                // Auth Initialization
+                const initAuth = async () => {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                };
+                initAuth();
+            }
+        } catch (e) {
+            console.error("Firebase init error:", e);
+        }
 
         const App = () => {
-            // 總步驟數 7 (0~6)
+            // 步驟狀態: 0-6 為流程, 99 為管理員後台
             const [currentStep, setCurrentStep] = useState(0);
+            const [user, setUser] = useState(null);
             const [userData, setUserData] = useState({
                 gender: 'male',
                 birthDate: '',
@@ -90,12 +112,41 @@
             const [quizResult, setQuizResult] = useState(null);
             const [riskChecks, setRiskChecks] = useState({});
 
+            // 監聽登入狀態
+            useEffect(() => {
+                if (auth) {
+                    const unsubscribe = onAuthStateChanged(auth, (u) => setUser(u));
+                    return () => unsubscribe();
+                }
+            }, []);
+
+            // 國健署 兒童及青少年BMI 建議值對照表 (簡化為整數年齡切點)
+            // 格式：[體重過輕切點, 體重過重切點, 肥胖切點]
+            const hpaChildBmiTable = {
+                male: {
+                    2: [14.8, 17.0, 18.0], 3: [14.3, 16.6, 17.5], 4: [13.9, 16.3, 17.2],
+                    5: [13.7, 16.2, 17.3], 6: [13.6, 16.3, 17.6], 7: [13.6, 16.6, 18.2],
+                    8: [13.7, 17.1, 19.0], 9: [13.9, 17.8, 19.9], 10: [14.2, 18.5, 20.8],
+                    11: [14.5, 19.3, 21.8], 12: [14.9, 20.1, 22.8], 13: [15.4, 20.9, 23.8],
+                    14: [15.9, 21.7, 24.6], 15: [16.4, 22.3, 25.2], 16: [16.9, 22.8, 25.6],
+                    17: [17.3, 23.2, 25.9]
+                },
+                female: {
+                    2: [14.4, 16.9, 18.0], 3: [14.0, 16.5, 17.6], 4: [13.6, 16.2, 17.4],
+                    5: [13.4, 16.2, 17.6], 6: [13.3, 16.4, 18.0], 7: [13.4, 16.9, 18.6],
+                    8: [13.6, 17.4, 19.4], 9: [13.9, 18.1, 20.3], 10: [14.2, 18.8, 21.2],
+                    11: [14.6, 19.6, 22.2], 12: [15.1, 20.4, 23.1], 13: [15.6, 21.2, 24.0],
+                    14: [16.1, 21.8, 24.7], 15: [16.5, 22.4, 25.1], 16: [16.9, 22.7, 25.3],
+                    17: [17.2, 22.9, 25.4]
+                }
+            };
+
             const calculateBMI = () => {
                 if (!userData.height || !userData.weight || !userData.birthDate) return;
 
                 const heightM = parseFloat(userData.height) / 100;
                 const weightKg = parseFloat(userData.weight);
-                const bmi = (weightKg / (heightM * heightM)).toFixed(1);
+                const bmi = parseFloat((weightKg / (heightM * heightM)).toFixed(1));
                 
                 const birth = new Date(userData.birthDate);
                 const today = new Date();
@@ -106,21 +157,59 @@
                 }
 
                 let status = 'normal';
-                let statusText = '體位正常';
-                let color = 'text-green-600';
+                let statusText = '';
+                let color = '';
 
-                if (bmi >= 23) {
-                    status = 'obese';
-                    statusText = '體位肥胖';
-                    color = 'text-red-500';
-                } else if (bmi >= 20) {
-                    status = 'overweight';
-                    statusText = '體位過重';
-                    color = 'text-orange-500';
-                } else if (bmi < 15) {
-                    status = 'underweight';
-                    statusText = '體位過輕';
-                    color = 'text-yellow-500';
+                // 依據年齡套用不同的判定標準
+                if (age >= 18) {
+                    // 台灣成人 BMI 體位分級表 (18歲以上)
+                    if (bmi >= 35) {
+                        status = 'obese';
+                        statusText = '重度肥胖';
+                        color = 'text-red-700';
+                    } else if (bmi >= 30) {
+                        status = 'obese';
+                        statusText = '中度肥胖';
+                        color = 'text-red-600';
+                    } else if (bmi >= 27) {
+                        status = 'obese';
+                        statusText = '輕度肥胖';
+                        color = 'text-red-500';
+                    } else if (bmi >= 24) {
+                        status = 'overweight';
+                        statusText = '體重過重';
+                        color = 'text-orange-500';
+                    } else if (bmi < 18.5) {
+                        status = 'underweight';
+                        statusText = '體重過輕';
+                        color = 'text-yellow-500';
+                    } else {
+                        status = 'normal';
+                        statusText = '健康體重';
+                        color = 'text-green-600';
+                    }
+                } else {
+                    // 兒童標準 (依據國健署資料查表)
+                    const lookupAge = Math.max(2, Math.min(17, age)); // 確保在2到17歲範圍內查表
+                    const limits = hpaChildBmiTable[userData.gender][lookupAge];
+                    
+                    if (bmi >= limits[2]) {
+                        status = 'obese';
+                        statusText = '體位肥胖';
+                        color = 'text-red-500';
+                    } else if (bmi >= limits[1]) {
+                        status = 'overweight';
+                        statusText = '體位過重';
+                        color = 'text-orange-500';
+                    } else if (bmi < limits[0]) {
+                        status = 'underweight';
+                        statusText = '體位過輕';
+                        color = 'text-yellow-500';
+                    } else {
+                        status = 'normal';
+                        statusText = '體位正常';
+                        color = 'text-green-600';
+                    }
                 }
 
                 // 計算每日建議飲水量 (Holiday-Segar Formula)
@@ -144,6 +233,7 @@
                 setQuizResult(null);
                 setRiskChecks({});
                 setBmiResult(null);
+                setUserData({ gender: 'male', birthDate: '', height: '', weight: '' });
             };
 
             const handleInputChange = (e) => {
@@ -151,7 +241,39 @@
                 setUserData(prev => ({ ...prev, [name]: value }));
             };
 
+            // 上傳資料邏輯
+            const handleUploadData = async () => {
+                if (!db || !user) {
+                    alert("目前無法連線到資料庫，請稍後再試 (或檢查網路/配置)");
+                    return;
+                }
+                try {
+                    const docData = {
+                        gender: userData.gender,
+                        age: bmiResult.age,
+                        height: userData.height,
+                        weight: userData.weight,
+                        bmi: bmiResult.bmi,
+                        bmiStatus: bmiResult.statusText,
+                        waterGoal: waterGoal,
+                        quizType: quizResult?.title || "未完成",
+                        riskCount: Object.values(riskChecks).filter(Boolean).length,
+                        timestamp: serverTimestamp(),
+                        userId: user.uid 
+                    };
+                    
+                    // 使用 public collection 方便管理員讀取
+                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'assessments'), docData);
+                    alert("資料上傳成功！醫師與校護將能收到您的健康資訊。");
+                } catch (error) {
+                    console.error("Upload failed", error);
+                    alert("上傳失敗，請重試");
+                }
+            };
+
             const renderStep = () => {
+                if (currentStep === 99) return <AdminDashboard onBack={restart} db={db} user={user} />;
+
                 switch(currentStep) {
                     case 0: return <InputStep userData={userData} onChange={handleInputChange} onCalculate={calculateBMI} />;
                     case 1: return <ResultStep result={bmiResult} onNext={nextStep} />;
@@ -165,6 +287,8 @@
                                     riskChecks={riskChecks} 
                                     waterGoal={waterGoal}
                                     onNext={nextStep} 
+                                    onUpload={handleUploadData}
+                                    dbReady={!!db}
                                 />;
                     case 6: return <MedicalInfoStep age={bmiResult?.age} onRestart={restart} />; 
                     default: return <InputStep userData={userData} onChange={handleInputChange} onCalculate={calculateBMI} />;
@@ -177,25 +301,32 @@
                         <div className="bg-emerald-500 p-6 text-white flex items-center gap-3 shadow-sm">
                             <Activity size={32} />
                             <div>
-                                <h1 className="text-2xl font-bold tracking-wide">兒童健康成長站</h1>
+                                <h1 className="text-2xl font-bold tracking-wide">身材檢測站</h1>
                                 <p className="text-emerald-100 text-sm">一起探索身體的奧秘，升級你的健康！</p>
                             </div>
                         </div>
 
-                        <div className="w-full bg-gray-200 h-2">
-                            <div 
-                                className="bg-emerald-500 h-2 transition-all duration-500 ease-out"
-                                style={{ width: `${(currentStep / 6) * 100}%` }}
-                            ></div>
-                        </div>
+                        {currentStep !== 99 && (
+                            <div className="w-full bg-gray-200 h-2">
+                                <div 
+                                    className="bg-emerald-500 h-2 transition-all duration-500 ease-out"
+                                    style={{ width: `${(currentStep / 6) * 100}%` }}
+                                ></div>
+                            </div>
+                        )}
 
                         <div className="flex-1 p-6 md:p-10 flex flex-col justify-center">
                             {renderStep()}
                         </div>
 
-                        <div className="bg-gray-50 p-4 text-center text-xs text-gray-500 border-t">
-                            本網頁提供之BMI計算與建議僅供參考，詳細醫療診斷請諮詢專業醫師。<br/>
-                            計算標準參考來源：<a href="https://www.hpa.gov.tw/Obesity/ChildBMI.aspx" target="_blank" rel="noreferrer" className="text-emerald-600 underline">衛生福利部國民健康署</a>
+                        <div className="bg-gray-50 p-4 flex justify-between items-center text-xs text-gray-500 border-t">
+                            <span>本網頁提供之BMI計算與建議僅供參考，詳細醫療診斷請諮詢專業醫師。</span>
+                            <button onClick={() => {
+                                const pwd = prompt("請輸入管理員密碼:");
+                                if (pwd === "1234") setCurrentStep(99);
+                            }} className="opacity-30 hover:opacity-100 transition-opacity">
+                                <Lock size={14} />
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -272,15 +403,15 @@
                         <div className="flex items-start gap-3">
                             <Scale className="text-orange-500 shrink-0 mt-1" />
                             <div>
-                                <h3 className="font-bold text-orange-800 text-lg">體位過重，要注意囉！</h3>
-                                <p className="text-orange-700">目前的體位有點過重了，距離肥胖只差一步。現在開始調整飲食和運動，很快就能回到健康的體位喔！我們一起來檢視一下生活習慣吧！</p>
+                                <h3 className="font-bold text-orange-800 text-lg">體重過重，要注意囉！</h3>
+                                <p className="text-orange-700">目前的體重有點過重了，距離肥胖只差一步。現在開始調整飲食和運動，很快就能回到健康的體位喔！我們一起來檢視一下生活習慣吧！</p>
                             </div>
                         </div>
                     </div>
                 ) : result.status === 'underweight' ? (
                     <div className="bg-yellow-50 border border-yellow-200 p-6 rounded-2xl text-left">
                         <h3 className="font-bold text-yellow-800 text-lg flex items-center gap-2"><CheckCircle2 size={20} /> 維持健康習慣</h3>
-                        <p className="text-yellow-800 mt-2 font-medium">體位過輕，不過還是維持均衡健康的飲食、充足的睡眠、足夠的運動，相信會健康長大的!</p>
+                        <p className="text-yellow-800 mt-2 font-medium">體重過輕，不過還是維持均衡健康的飲食、充足的睡眠、足夠的運動，相信會健康長大的!</p>
                         <p className="text-yellow-700 mt-1 text-sm">如果有任何疑問，也歡迎尋求兒科醫師的醫療評估喔!</p>
                     </div>
                 ) : (
@@ -509,13 +640,21 @@
             );
         };
 
-        const SummaryReportStep = ({ userData, bmiResult, quizResult, riskChecks, waterGoal, onNext }) => {
+        const SummaryReportStep = ({ userData, bmiResult, quizResult, riskChecks, waterGoal, onNext, onUpload, dbReady }) => {
             const riskCount = Object.values(riskChecks).filter(Boolean).length;
+            const [uploading, setUploading] = useState(false);
+
+            const handleUploadClick = async () => {
+                setUploading(true);
+                await onUpload();
+                setUploading(false);
+            };
+
             return (
                 <div className="animate-fadeIn space-y-6 h-full overflow-y-auto max-h-[600px] pr-2 pb-10">
                     <div className="text-center bg-slate-800 text-white p-6 rounded-2xl shadow-lg">
                         <ClipboardCheck className="mx-auto mb-2 text-emerald-400" size={40} />
-                        <h2 className="text-2xl font-bold tracking-widest">兒童健康成長報告書</h2>
+                        <h2 className="text-2xl font-bold tracking-widest">身材檢測報告書</h2>
                         <p className="text-slate-400 text-sm mt-1">{new Date().toLocaleDateString()} 檢測結果</p>
                     </div>
                     <div className="bg-white p-5 rounded-xl shadow-sm border-2 border-slate-100">
@@ -551,10 +690,23 @@
                             <li className="flex items-center gap-3"><Moon size={16} className="text-indigo-400"/><span>睡眠充足：睡飽飽才能瘦得快！</span></li>
                         </ul>
                     </div>
-                    <div className="pt-4">
-                        <button onClick={onNext} className="w-full py-4 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2">如果調整之後體重降的不夠理想怎麼辦?</button>
-                        <p className="text-xs text-center text-slate-400 mt-4 border-t pt-2">由兒童減重專科醫師蕭宇超整理</p>
+                    
+                    {/* 上傳資料按鈕區域 */}
+                    <div className="flex flex-col gap-3 pt-2">
+                        {dbReady && (
+                            <button 
+                                onClick={handleUploadClick}
+                                disabled={uploading}
+                                className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold shadow-lg flex items-center justify-center gap-2 transition-all active:scale-95 disabled:bg-gray-400"
+                            >
+                                {uploading ? <div className="animate-spin h-5 w-5 border-2 border-white rounded-full border-t-transparent"></div> : <Upload size={20} />}
+                                {uploading ? "上傳中..." : "上傳資料給校護/醫師"}
+                            </button>
+                        )}
+                        <button onClick={onNext} className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2">如果調整之後體重降的不夠理想怎麼辦?</button>
                     </div>
+                    
+                    <p className="text-xs text-center text-slate-400 mt-4 border-t pt-2">由兒童減重專科醫師蕭宇超整理</p>
                 </div>
             );
         };
@@ -589,6 +741,13 @@
                             <div className="md:border-l md:border-emerald-200 md:pl-4"><span className="font-bold text-slate-800 block mb-1">使用方式：</span><span className="text-emerald-800">每週一次，皮下注射。</span></div>
                         </div>
                         <div className="bg-red-50 p-3 rounded-lg text-red-700 text-xs"><span className="font-bold">常見副作用：</span>噁心、便秘、腹瀉等腸胃道症狀。請務必諮詢專業醫療院所，由醫師評估後開立。</div>
+                        
+                        <div className="pt-2">
+                            <a href="https://smilecloud.tw/wegovy/" target="_blank" rel="noopener noreferrer" className="flex items-center justify-center gap-2 w-full py-3 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-xl font-bold transition-all">
+                                <FileText size={18} />
+                                閱讀更詳細的 Wegovy 藥物介紹
+                            </a>
+                        </div>
                     </div>
                 </div>
                 <div className="bg-gray-100 p-4 rounded-xl text-center">
@@ -600,9 +759,79 @@
             </div>
         );
 
+        // 管理員後台
+        const AdminDashboard = ({ onBack, db, user }) => {
+            const [records, setRecords] = useState([]);
+            const [loading, setLoading] = useState(true);
+
+            useEffect(() => {
+                if (!db || !user) return;
+                const fetchRecords = async () => {
+                    try {
+                        // 使用 public collection (遵循RULE 1)
+                        const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'assessments'), orderBy('timestamp', 'desc'));
+                        const querySnapshot = await getDocs(q);
+                        const data = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                        setRecords(data);
+                    } catch (error) {
+                        console.error("Fetch error:", error);
+                    } finally {
+                        setLoading(false);
+                    }
+                };
+                fetchRecords();
+            }, [db, user]);
+
+            return (
+                <div className="animate-fadeIn h-full flex flex-col">
+                    <div className="flex justify-between items-center mb-4 pb-4 border-b">
+                        <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><Database size={24} className="text-blue-600" /> 受測者資料管理</h2>
+                        <button onClick={onBack} className="text-gray-500 hover:text-gray-800"><XCircle /></button>
+                    </div>
+                    
+                    <div className="flex-1 overflow-auto bg-slate-50 rounded-xl border border-slate-200 p-2">
+                        {loading ? (
+                            <div className="flex justify-center items-center h-full text-gray-400">載入中...</div>
+                        ) : records.length === 0 ? (
+                            <div className="flex justify-center items-center h-full text-gray-400">目前尚無資料</div>
+                        ) : (
+                            <table className="w-full text-sm text-left">
+                                <thead className="text-xs text-gray-700 uppercase bg-gray-100 sticky top-0">
+                                    <tr>
+                                        <th className="px-3 py-3">時間</th>
+                                        <th className="px-3 py-3">性別</th>
+                                        <th className="px-3 py-3">年齡</th>
+                                        <th className="px-3 py-3">BMI</th>
+                                        <th className="px-3 py-3">體位</th>
+                                        <th className="px-3 py-3">類型</th>
+                                        <th className="px-3 py-3">警訊</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {records.map((rec) => (
+                                        <tr key={rec.id} className="bg-white border-b hover:bg-blue-50">
+                                            <td className="px-3 py-2">{rec.timestamp?.seconds ? new Date(rec.timestamp.seconds * 1000).toLocaleDateString() : '-'}</td>
+                                            <td className="px-3 py-2">{rec.gender === 'male' ? '男' : '女'}</td>
+                                            <td className="px-3 py-2">{rec.age}</td>
+                                            <td className="px-3 py-2 font-bold">{rec.bmi}</td>
+                                            <td className={`px-3 py-2 ${rec.bmiStatus?.includes('肥胖') ? 'text-red-500 font-bold' : ''}`}>{rec.bmiStatus}</td>
+                                            <td className="px-3 py-2 text-xs text-slate-500">{rec.quizType}</td>
+                                            <td className="px-3 py-2 text-center">{rec.riskCount > 0 ? <span className="text-red-500 font-bold">{rec.riskCount}</span> : '-'}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        )}
+                    </div>
+                    <div className="mt-4 text-center">
+                        <button onClick={onBack} className="px-6 py-2 bg-slate-600 text-white rounded-lg hover:bg-slate-700">返回首頁</button>
+                    </div>
+                </div>
+            );
+        };
+
         const root = createRoot(document.getElementById('root'));
         root.render(<App />);
     </script>
 </body>
 </html>
-
