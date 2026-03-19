@@ -287,6 +287,7 @@
                                     riskChecks={riskChecks} 
                                     waterGoal={waterGoal}
                                     onNext={nextStep} 
+                                    onRestart={restart}
                                     onUpload={handleUploadData}
                                     dbReady={!!db}
                                 />;
@@ -422,7 +423,7 @@
                 )}
 
                 <button onClick={onNext} className="px-8 py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-full font-bold text-lg shadow-lg flex items-center gap-2 mx-auto">
-                    {result.status === 'obese' ? '看看身體發生了什麼事' : '抓出你的健康搗蛋鬼'} <ArrowRight size={20} />
+                    {result.status === 'obese' || result.status === 'overweight' ? '看看身體發生了什麼事' : '抓出你的健康搗蛋鬼'} <ArrowRight size={20} />
                 </button>
             </div>
         );
@@ -640,9 +641,12 @@
             );
         };
 
-        const SummaryReportStep = ({ userData, bmiResult, quizResult, riskChecks, waterGoal, onNext, onUpload, dbReady }) => {
+        const SummaryReportStep = ({ userData, bmiResult, quizResult, riskChecks, waterGoal, onNext, onRestart, onUpload, dbReady }) => {
             const riskCount = Object.values(riskChecks).filter(Boolean).length;
             const [uploading, setUploading] = useState(false);
+
+            // 判斷是否需要顯示醫療資訊的按鈕
+            const needsMedicalInfo = bmiResult.status === 'obese' || bmiResult.status === 'overweight';
 
             const handleUploadClick = async () => {
                 setUploading(true);
@@ -703,7 +707,12 @@
                                 {uploading ? "上傳中..." : "上傳資料給校護/醫師"}
                             </button>
                         )}
-                        <button onClick={onNext} className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2">如果調整之後體重降的不夠理想怎麼辦?</button>
+                        
+                        {needsMedicalInfo ? (
+                            <button onClick={onNext} className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2">如果調整之後體重降的不夠理想怎麼辦?</button>
+                        ) : (
+                            <button onClick={onRestart} className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2">重新檢測</button>
+                        )}
                     </div>
                     
                     <p className="text-xs text-center text-slate-400 mt-4 border-t pt-2">由兒童減重專科醫師蕭宇超整理</p>
@@ -835,3 +844,5 @@
     </script>
 </body>
 </html>
+
+
